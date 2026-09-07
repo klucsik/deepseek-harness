@@ -29,6 +29,10 @@ export interface WebStartupValues {
   port?: number
   /** Explicit `--trusted-host` authorities, in argument order. */
   trustedHosts: string[]
+  /** Whether authentication checks are disabled for headless/container deployments. */
+  noAuth?: boolean
+  /** Initial workspace directory for the directory picker and project root. */
+  workspace?: string
 }
 
 /** The web flag family, as commander parsed it. */
@@ -37,6 +41,8 @@ interface WebOptions {
   open: boolean
   port?: string
   trustedHost?: string[]
+  auth?: boolean
+  workspace?: string
 }
 
 /**
@@ -51,12 +57,15 @@ function webCommand(): Command {
     .option('--host <host>', 'bind host')
     .option('--no-open', 'do not open the Web UI in the default browser')
     .option('--port <port>', 'listen port; pass 0 to let the OS pick a free one')
+    .option('--no-auth', 'disable browser token and cookie authentication (for headless/container environments)')
+    .option('--workspace <dir>', 'initial directory for the file and directory picker')
     .option('--trusted-host <authority...>', 'extra authority the /api browser-trust fence accepts (host or host:port; repeatable)')
     .addHelpText('after', `
 Examples:
   dsh --profile web                          serve on the composed host and port
   dsh --profile web --no-open                serve without opening a browser
   dsh --profile web --port 8080              serve on another port
+  dsh --profile web --no-auth --host 0.0.0.0 serve in a headless container
 `)
 }
 
@@ -71,8 +80,15 @@ export function apply(ctx: Context): void {
   const program = webCommand()
   program.action(() => {
     const options = program.opts<WebOptions>()
-    if (options.host === '0.0.0.0') {
-      program.error('error: --host 0.0.0.0 is intentionally not supported yet for safety: it would expose remote code execution to the network; use 127.0.0.1 instead')
+    const isAuthDisabled = options.auth === false || process.env.DSH_DISABLE_AUTH === 'true'
+    if (options.host === '0.0.0.0' && !isAuthDisabled) {
+      program.error('error: --host 0.0.0.0 requires --no-auth or DSH_DISABLE_AUTH=true for safe headless/container deployment')
+    }
+    if (isAuthDisabled) {
+      process.env.DSH_DISABLE_AUTH = 'true'
+    }
+    if (options.workspace !== undefined) {
+      process.env.DSH_WORKSPACE_DIR = options.workspace
     }
     if (options.port !== undefined && !/^\d+$/.test(options.port)) {
       program.error(`error: --port must be a number, got ${JSON.stringify(options.port)}`)
@@ -82,6 +98,8 @@ export function apply(ctx: Context): void {
       ...options.host !== undefined && { host: options.host },
       ...options.port !== undefined && { port: Number(options.port) },
       trustedHosts: options.trustedHost ?? [],
+      noAuth: isAuthDisabled,
+      ...options.workspace !== undefined && { workspace: options.workspace },
     } satisfies WebStartupValues)
   })
   parseCmdline(ctx, program)
